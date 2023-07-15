@@ -1,95 +1,141 @@
-class Example:
-    """
-    A example node
+import json
 
-    Class methods
-    -------------
-    INPUT_TYPES (dict): 
-        Tell the main program input parameters of nodes.
+import requests
 
-    Attributes
-    ----------
-    RETURN_TYPES (`tuple`): 
-        The type of each element in the output tulple.
-    RETURN_NAMES (`tuple`):
-        Optional: The name of each output in the output tulple.
-    FUNCTION (`str`):
-        The name of the entry-point method. For example, if `FUNCTION = "execute"` then it will run Example().execute()
-    OUTPUT_NODE ([`bool`]):
-        If this node is an output node that outputs a result/image from the graph. The SaveImage node is an example.
-        The backend iterates on these output nodes and tries to execute all their parents if their parent graph is properly connected.
-        Assumed to be False if not present.
-    CATEGORY (`str`):
-        The category the node should appear in the UI.
-    execute(s) -> tuple || None:
-        The entry point method. The name of this method must be the same as the value of property `FUNCTION`.
-        For example, if `FUNCTION = "execute"` then this method's name must be `execute`, if `FUNCTION = "foo"` then it must be `foo`.
-    """
-    def __init__(self):
-        pass
-    
+from custom_nodes.DTGlobalVariables import variables
+from custom_nodes.DTPromptAgent import config
+
+
+class DTPromptAgentString:
     @classmethod
     def INPUT_TYPES(s):
-        """
-            Return a dictionary which contains config for all input fields.
-            Some types (string): "MODEL", "VAE", "CLIP", "CONDITIONING", "LATENT", "IMAGE", "INT", "STRING", "FLOAT".
-            Input types "INT", "STRING" or "FLOAT" are special values for fields on the node.
-            The type can be a list for selection.
+        return {"required": {"text": ("STRING", {"multiline": True}), "clip": ("CLIP", )}}
+    RETURN_TYPES = ("STRING","CLIP")
+    FUNCTION = "encode"
 
-            Returns: `dict`:
-                - Key input_fields_group (`string`): Can be either required, hidden or optional. A node class must have property `required`
-                - Value input_fields (`dict`): Contains input fields config:
-                    * Key field_name (`string`): Name of a entry-point method's argument
-                    * Value field_config (`tuple`):
-                        + First value is a string indicate the type of field or a list for selection.
-                        + Secound value is a config for type "INT", "STRING" or "FLOAT".
-        """
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "int_field": ("INT", {
-                    "default": 0, 
-                    "min": 0, #Minimum value
-                    "max": 4096, #Maximum value
-                    "step": 64 #Slider's step
-                }),
-                "float_field": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                "print_to_screen": (["enable", "disable"],),
-                "string_field": ("STRING", {
-                    "multiline": False, #True if you want the field to look like the one on the ClipTextEncode node
-                    "default": "Hello World!"
-                }),
-            },
-        }
+    CATEGORY = "DoubTech/Agents"
 
-    RETURN_TYPES = ("IMAGE",)
-    #RETURN_NAMES = ("image_output_name",)
 
-    FUNCTION = "test"
+    @classmethod
+    def IS_CHANGED(s, text):
+        return True
 
-    #OUTPUT_NODE = False
+    def encode(self,  text, clip):
+        text = variables.apply(text)
+        # Request a prompt from the prompt agent rest api
+        response = requests.get("https://api.aiart.doubtech.com/gpt/agent", params={"key": config.agent_key, "prompt": text})
 
-    CATEGORY = "Example"
+        # Get the first item from content
+        # ex response: {"content":"[\"A lone astronaut floats above a breathtaking view of Earth. {tag:astronaut}{tag:space}{tag:Earth}\"]"}
 
-    def test(self, image, string_field, int_field, float_field, print_to_screen):
-        if print_to_screen == "enable":
-            print(f"""Your input contains:
-                string_field aka input text: {string_field}
-                int_field: {int_field}
-                float_field: {float_field}
-            """)
-        #do some processing on the image, in this example I just invert it
-        image = 1.0 - image
-        return (image,)
+        try:
+            response = response.json()
+            try:
+                prompt = json.loads(response["content"])[0]
+            except:
+                prompt = response["content"]
+        except Exception as e:
+            print(e)
+            prompt = text
+
+        print("Generated prompt: " + prompt)
+
+        # Strip out anything wrapped by {tag:...} and create a list of tags from them
+        tags = []
+        while "{tag:" in prompt:
+            start = prompt.index("{tag:")
+            end = prompt.index("}", start)
+            tag = prompt[start+5:end]
+            tags.append(tag)
+            prompt = prompt[:start] + prompt[end+1:]
+
+        if "tags" not in variables.state:
+            # Convert the list into a comma separated string
+            stags = ",".join(tags)
+            # Set the tags variable
+            variables.state["tags"] = stags
+        else:
+            # Split the tags variable into a list, don't keep empty strings
+            current_tags = variables.state["tags"].split(",")
+            current_tags = [t for t in current_tags if t != ""]
+            # Merge the two lists
+            variables.state["tags"] = ",".join(list(set(current_tags + tags)))
+
+        variables.state["prompt"] = prompt
+        variables.generated_prompt = prompt
+        print("Output prompt: " + prompt)
+        return (prompt,clip)
+
+class DTPromptAgent:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"text": ("STRING", {"multiline": True}), "clip": ("CLIP", )}}
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "encode"
+
+    CATEGORY = "DoubTech/Conditioning"
+
+
+    @classmethod
+    def IS_CHANGED(s, clip, text):
+        return True
+
+    def encode(self, clip, text):
+        text = variables.apply(text)
+        # Request a prompt from the prompt agent rest api
+        # ex: https://api.aiart.doubtech.com/gpt/agent?key=40abb6c8-d2f4-4f97-9449-72b65ff1158d&prompt=create%20a%20random%20space%20prompt
+        response = requests.get("https://api.aiart.doubtech.com/gpt/agent", params={"key": "c52b8649-600a-48d5-b43a-7407383c992e", "prompt": text})
+
+        # Get the first item from content
+        # ex response: {"content":"[\"A lone astronaut floats above a breathtaking view of Earth. {tag:astronaut}{tag:space}{tag:Earth}\"]"}
+
+        try:
+            response = response.json()
+            try:
+                prompt = json.loads(response["content"])[0]
+            except:
+                prompt = response["content"]
+        except Exception as e:
+            print(e)
+            prompt = text
+
+        print("Generated prompt: " + prompt)
+
+        # Strip out anything wrapped by {tag:...} and create a list of tags from them
+        tags = []
+        while "{tag:" in prompt:
+            start = prompt.index("{tag:")
+            end = prompt.index("}", start)
+            tag = prompt[start+5:end]
+            tags.append(tag)
+            prompt = prompt[:start] + prompt[end+1:]
+
+        if "tags" not in variables.state:
+            # Convert the list into a comma separated string
+            stags = ",".join(tags)
+            # Set the tags variable
+            variables.state["tags"] = stags
+        else:
+            # Split the tags variable into a list, don't keep empty strings
+            current_tags = variables.state["tags"].split(",")
+            current_tags = [t for t in current_tags if t != ""]
+            # Merge the two lists
+            variables.state["tags"] = ",".join(list(set(current_tags + tags)))
+
+        variables.state["prompt"] = prompt
+        variables.generated_prompt = prompt
+        return ([[clip.encode(prompt), {}]], )
 
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "Example": Example
+    "DTPromptAgent": DTPromptAgent,
+    "DTPromptAgentString": DTPromptAgentString
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Example": "Example Node"
+    "DTPromptAgent": "Prompt Agent",
+    "DTPromptAgentString": "Prompt Agent (String)"
 }
